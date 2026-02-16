@@ -21,9 +21,15 @@ import (
 )
 
 const (
-	// wsBaseURL is the base WebSocket endpoint for the Massive streaming API.
-	wsBaseURL = "wss://socket.massive.com"
+	// wsDelayedURL is the base WebSocket endpoint for delayed (15-min) streaming data.
+	wsDelayedURL = "wss://delayed.massive.com"
+
+	// wsRealtimeURL is the base WebSocket endpoint for real-time streaming data.
+	wsRealtimeURL = "wss://socket.massive.com"
 )
+
+// wsRealtime controls whether to connect to the real-time or delayed WebSocket endpoint.
+var wsRealtime bool
 
 // wsCmd is the parent command for all WebSocket streaming subcommands.
 // It groups real-time streaming commands for stocks, crypto, forex, etc.
@@ -154,6 +160,12 @@ var wsStocksFMVCmd = &cobra.Command{
 // quotes, aggregates, etc.) provides its own formatter implementation.
 type tableFormatter func(w *tabwriter.Writer, event map[string]interface{})
 
+// connectAndStream is a convenience wrapper that connects to the stocks WebSocket
+// endpoint, authenticates, subscribes, and streams data. Used by all ws stocks subcommands.
+func connectAndStream(parentCtx context.Context, channel, tickerParams string, formatter tableFormatter) error {
+	return connectAndStreamAsset(parentCtx, "stocks", channel, tickerParams, formatter)
+}
+
 // buildTickerParams constructs the subscription parameter string for the given
 // channel and ticker symbols. If the all flag is set, it returns a wildcard
 // subscription (e.g., "T.*"). Otherwise it prefixes each ticker with the channel
@@ -173,31 +185,33 @@ func buildTickerParams(channel string, args []string, all bool) (string, error) 
 	return strings.Join(parts, ","), nil
 }
 
-// buildWSURL constructs the full WebSocket connection URL for the given channel
-// and API key. Most channels use the path /stocks/{channel}, but FMV uses the
-// special path /business/stocks/FMV.
-func buildWSURL(channel, apiKey string) string {
-	path := "/stocks/" + channel
-	if channel == "FMV" {
-		path = "/business/stocks/FMV"
+// getWSBaseURL returns the appropriate WebSocket base URL based on whether
+// the --realtime flag is set. Returns the delayed endpoint by default.
+func getWSBaseURL() string {
+	if wsRealtime {
+		return wsRealtimeURL
 	}
-	return wsBaseURL + path + "?apiKey=" + apiKey
+	return wsDelayedURL
 }
 
-// connectAndStream establishes a WebSocket connection to the Massive streaming
-// API, subscribes to the given tickers on the specified channel, and reads
-// messages in a loop until the context is cancelled (e.g., via Ctrl+C). Each
-// incoming message is a JSON array of events. In JSON output mode, each event
-// is printed as a single line of JSON. In table output mode, a header is printed
-// once and each event is formatted as a table row using the provided formatter.
-// The connection is cleanly closed with a close message on shutdown.
-func connectAndStream(parentCtx context.Context, channel, tickerParams string, formatter tableFormatter) error {
+// buildWSURL constructs the full WebSocket connection URL for the given asset
+// class. The channel is NOT included in the URL path — it is specified in
+// the subscribe message after connecting and authenticating.
+func buildWSURL(assetClass string) string {
+	return getWSBaseURL() + "/" + assetClass
+}
+
+// connectAndStreamAsset establishes a WebSocket connection to the Massive streaming
+// API for any asset class, authenticates, subscribes to the given tickers, and
+// reads messages in a loop until the context is cancelled (e.g., via Ctrl+C).
+// The assetClass parameter determines the WebSocket path (e.g., "stocks", "crypto").
+func connectAndStreamAsset(parentCtx context.Context, assetClass, channel, tickerParams string, formatter tableFormatter) error {
 	apiKey, err := config.GetAPIKey()
 	if err != nil {
 		return err
 	}
 
-	url := buildWSURL(channel, apiKey)
+	url := buildWSURL(assetClass)
 
 	// Set up signal handling for clean shutdown on Ctrl+C.
 	ctx, cancel := context.WithCancel(parentCtx)
@@ -220,6 +234,37 @@ func connectAndStream(parentCtx context.Context, channel, tickerParams string, f
 	}
 	defer conn.Close()
 
+	// Read the initial "connected" status message from the server.
+	_, _, err = conn.ReadMessage()
+	if err != nil {
+		return fmt.Errorf("failed to read connection message: %w", err)
+	}
+
+	// Authenticate by sending the API key in an auth action message.
+	authMsg := map[string]string{
+		"action": "auth",
+		"params": apiKey,
+	}
+	if err := conn.WriteJSON(authMsg); err != nil {
+		return fmt.Errorf("failed to send auth message: %w", err)
+	}
+
+	// Read the auth response and verify authentication succeeded.
+	_, authResp, err := conn.ReadMessage()
+	if err != nil {
+		return fmt.Errorf("failed to read auth response: %w", err)
+	}
+
+	var authEvents []map[string]interface{}
+	if err := json.Unmarshal(authResp, &authEvents); err == nil {
+		for _, ev := range authEvents {
+			if status, ok := ev["status"].(string); ok && status != "auth_success" {
+				msg, _ := ev["message"].(string)
+				return fmt.Errorf("authentication failed: %s", msg)
+			}
+		}
+	}
+
 	// Send the subscribe message to start receiving events for the requested tickers.
 	subscribeMsg := map[string]string{
 		"action": "subscribe",
@@ -229,7 +274,23 @@ func connectAndStream(parentCtx context.Context, channel, tickerParams string, f
 		return fmt.Errorf("failed to send subscribe message: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "Connected to %s channel, subscribed to: %s\n", channel, tickerParams)
+	// Read the subscribe response to check for errors.
+	_, subResp, err := conn.ReadMessage()
+	if err != nil {
+		return fmt.Errorf("failed to read subscribe response: %w", err)
+	}
+
+	var subEvents []map[string]interface{}
+	if err := json.Unmarshal(subResp, &subEvents); err == nil {
+		for _, ev := range subEvents {
+			if status, ok := ev["status"].(string); ok && status == "error" {
+				msg, _ := ev["message"].(string)
+				return fmt.Errorf("subscription failed: %s", msg)
+			}
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "Connected to %s/%s, subscribed to: %s\n", assetClass, channel, tickerParams)
 
 	// Set up table writer for table output mode. The header is printed once
 	// and flushed after each batch of events to keep output streaming smoothly.
@@ -240,36 +301,28 @@ func connectAndStream(parentCtx context.Context, channel, tickerParams string, f
 		w.Flush()
 	}
 
-	// Read messages in a loop until context is cancelled.
+	// Close the connection when the context is cancelled (e.g., Ctrl+C).
+	// This causes ReadMessage in the main loop to return an error and exit cleanly.
+	go func() {
+		<-ctx.Done()
+		_ = conn.WriteMessage(
+			websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+		)
+		conn.Close()
+	}()
+
+	// Read messages in a loop until the connection is closed.
 	for {
-		select {
-		case <-ctx.Done():
-			// Send a close message to the server for a clean disconnect.
-			_ = conn.WriteMessage(
-				websocket.CloseMessage,
-				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
-			)
-			fmt.Fprintln(os.Stderr, "\nDisconnected.")
-			return nil
-		default:
-		}
-
-		// Set a read deadline so we periodically check for context cancellation.
-		conn.SetReadDeadline(time.Now().Add(1 * time.Second))
-
 		_, message, err := conn.ReadMessage()
 		if err != nil {
-			if websocket.IsCloseError(err, websocket.CloseNormalClosure) {
-				fmt.Fprintln(os.Stderr, "\nServer closed connection.")
-				return nil
-			}
-			// Timeout errors are expected; loop back and check context.
-			if isTimeoutError(err) {
-				continue
-			}
 			// If context was cancelled, exit cleanly.
 			if ctx.Err() != nil {
 				fmt.Fprintln(os.Stderr, "\nDisconnected.")
+				return nil
+			}
+			if websocket.IsCloseError(err, websocket.CloseNormalClosure) {
+				fmt.Fprintln(os.Stderr, "\nServer closed connection.")
 				return nil
 			}
 			return fmt.Errorf("error reading message: %w", err)
@@ -309,27 +362,12 @@ func connectAndStream(parentCtx context.Context, channel, tickerParams string, f
 	}
 }
 
-// isTimeoutError checks whether the given error is a network timeout error.
-// This is used to distinguish expected read deadline timeouts from real errors
-// during the WebSocket read loop.
-func isTimeoutError(err error) bool {
-	if err == nil {
-		return false
-	}
-	// net.Error has a Timeout() method.
-	type timeoutErr interface {
-		Timeout() bool
-	}
-	if te, ok := err.(timeoutErr); ok {
-		return te.Timeout()
-	}
-	return false
-}
-
 // printTableHeader writes the column header row for the specified channel's
-// table output format to the given tabwriter.
+// table output format to the given tabwriter. Supports stock channels (T, Q, AM, A, LULD, FMV, V)
+// and crypto channels (XT, XQ, XA, XAS, FMV).
 func printTableHeader(w *tabwriter.Writer, channel string) {
 	switch channel {
+	// Stock channels
 	case "T":
 		fmt.Fprintln(w, "TIME\tSYMBOL\tPRICE\tSIZE\tEXCHANGE")
 		fmt.Fprintln(w, "----\t------\t-----\t----\t--------")
@@ -342,6 +380,27 @@ func printTableHeader(w *tabwriter.Writer, channel string) {
 	case "LULD":
 		fmt.Fprintln(w, "TIME\tSYMBOL\tHIGH\tLOW")
 		fmt.Fprintln(w, "----\t------\t----\t---")
+	case "V":
+		fmt.Fprintln(w, "TIME\tSYMBOL\tVALUE")
+		fmt.Fprintln(w, "----\t------\t-----")
+	// Crypto channels
+	case "XT":
+		fmt.Fprintln(w, "TIME\tPAIR\tPRICE\tSIZE\tEXCHANGE")
+		fmt.Fprintln(w, "----\t----\t-----\t----\t--------")
+	case "XQ":
+		fmt.Fprintln(w, "TIME\tPAIR\tBID\tBID_SIZE\tASK\tASK_SIZE")
+		fmt.Fprintln(w, "----\t----\t---\t--------\t---\t--------")
+	case "XA", "XAS":
+		fmt.Fprintln(w, "TIME\tPAIR\tOPEN\tHIGH\tLOW\tCLOSE\tVOLUME")
+		fmt.Fprintln(w, "----\t----\t----\t----\t---\t-----\t------")
+	// Forex channels
+	case "C":
+		fmt.Fprintln(w, "TIME\tPAIR\tBID\tASK")
+		fmt.Fprintln(w, "----\t----\t---\t---")
+	case "CA", "CAS":
+		fmt.Fprintln(w, "TIME\tPAIR\tOPEN\tHIGH\tLOW\tCLOSE\tVOLUME")
+		fmt.Fprintln(w, "----\t----\t----\t----\t---\t-----\t------")
+	// FMV channel (used for stocks, crypto, and forex)
 	case "FMV":
 		fmt.Fprintln(w, "TIME\tSYMBOL\tFMV")
 		fmt.Fprintln(w, "----\t------\t---")
@@ -456,6 +515,7 @@ func formatFMV(w *tabwriter.Writer, event map[string]interface{}) {
 func init() {
 	// Register parent commands.
 	rootCmd.AddCommand(wsCmd)
+	wsCmd.PersistentFlags().BoolVar(&wsRealtime, "realtime", false, "Connect to real-time endpoint instead of delayed (15-min)")
 	wsCmd.AddCommand(wsStocksCmd)
 
 	// Add --all flag to each subcommand.
