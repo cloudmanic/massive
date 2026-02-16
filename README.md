@@ -16,6 +16,19 @@ There are plenty of ways to interact with financial data APIs. You could write s
 
 ## Installation
 
+### Homebrew (macOS / Linux)
+
+```bash
+brew tap cloudmanic/tap
+brew install massive
+```
+
+To upgrade to the latest version:
+
+```bash
+brew upgrade massive
+```
+
 ### From Source
 
 ```bash
@@ -30,10 +43,14 @@ Move the binary somewhere in your `$PATH`:
 mv massive /usr/local/bin/
 ```
 
+### Pre-built Binaries
+
+Download the latest binary for your platform from the [Releases](https://github.com/cloudmanic/massive/releases) page.
+
 ### Requirements
 
-- Go 1.24+ (for building from source)
 - A [Massive](https://massive.com) API key
+- Go 1.24+ (only if building from source)
 
 ## Quick Start
 
