@@ -23,6 +23,18 @@ func newClient() (*api.Client, error) {
 	return api.NewClient(apiKey), nil
 }
 
+// maskString partially masks a sensitive string for display, showing only
+// the first 4 and last 4 characters. Returns empty string if input is empty.
+func maskString(s string) string {
+	if s == "" {
+		return ""
+	}
+	if len(s) > 8 {
+		return s[:4] + "..." + s[len(s)-4:]
+	}
+	return "****"
+}
+
 // printJSON formats the given value as indented JSON and prints it to stdout.
 // Used when the --output json flag is specified.
 func printJSON(v interface{}) error {

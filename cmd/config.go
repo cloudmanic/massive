@@ -55,6 +55,41 @@ var configInitCmd = &cobra.Command{
 			return fmt.Errorf("API key cannot be empty")
 		}
 
+		fmt.Print("\nConfigure S3 flat file access? [y/N]: ")
+		s3Answer, _ := reader.ReadString('\n')
+		s3Answer = strings.TrimSpace(strings.ToLower(s3Answer))
+		if s3Answer == "y" || s3Answer == "yes" {
+			envS3Access := os.Getenv("MASSIVE_S3_ACCESS_KEY")
+			if envS3Access != "" {
+				fmt.Printf("Found S3 access key in environment variable. Use it? [Y/n]: ")
+				answer, _ := reader.ReadString('\n')
+				answer = strings.TrimSpace(strings.ToLower(answer))
+				if answer == "" || answer == "y" || answer == "yes" {
+					cfg.S3AccessKey = envS3Access
+				}
+			}
+			if cfg.S3AccessKey == "" {
+				fmt.Print("Enter your S3 Access Key ID: ")
+				key, _ := reader.ReadString('\n')
+				cfg.S3AccessKey = strings.TrimSpace(key)
+			}
+
+			envS3Secret := os.Getenv("MASSIVE_S3_SECRET_KEY")
+			if envS3Secret != "" {
+				fmt.Printf("Found S3 secret key in environment variable. Use it? [Y/n]: ")
+				answer, _ := reader.ReadString('\n')
+				answer = strings.TrimSpace(strings.ToLower(answer))
+				if answer == "" || answer == "y" || answer == "yes" {
+					cfg.S3SecretKey = envS3Secret
+				}
+			}
+			if cfg.S3SecretKey == "" {
+				fmt.Print("Enter your S3 Secret Access Key: ")
+				key, _ := reader.ReadString('\n')
+				cfg.S3SecretKey = strings.TrimSpace(key)
+			}
+		}
+
 		if err := config.Save(cfg); err != nil {
 			return fmt.Errorf("failed to save config: %w", err)
 		}
@@ -75,13 +110,15 @@ var configShowCmd = &cobra.Command{
 			return fmt.Errorf("failed to load config: %w", err)
 		}
 
-		maskedKey := cfg.APIKey
-		if len(maskedKey) > 8 {
-			maskedKey = maskedKey[:4] + "..." + maskedKey[len(maskedKey)-4:]
-		}
+		maskedKey := maskString(cfg.APIKey)
+		maskedS3Access := maskString(cfg.S3AccessKey)
+		maskedS3Secret := maskString(cfg.S3SecretKey)
 
-		fmt.Printf("Base URL:  %s\n", cfg.BaseURL)
-		fmt.Printf("API Key:   %s\n", maskedKey)
+		fmt.Printf("Base URL:       %s\n", cfg.BaseURL)
+		fmt.Printf("API Key:        %s\n", maskedKey)
+		fmt.Printf("S3 Endpoint:    %s\n", cfg.S3Endpoint)
+		fmt.Printf("S3 Access Key:  %s\n", maskedS3Access)
+		fmt.Printf("S3 Secret Key:  %s\n", maskedS3Secret)
 
 		return nil
 	},

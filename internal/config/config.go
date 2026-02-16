@@ -26,18 +26,23 @@ func SetConfigDir(dir string) {
 	configDirOverride = dir
 }
 
-// Config holds the application configuration including API credentials
-// and the base URL for the Massive API.
+// Config holds the application configuration including API credentials,
+// the base URL for the Massive REST API, and S3 credentials for flat file access.
 type Config struct {
-	APIKey  string `json:"api_key"`
-	BaseURL string `json:"base_url"`
+	APIKey      string `json:"api_key"`
+	BaseURL     string `json:"base_url"`
+	S3AccessKey string `json:"s3_access_key,omitempty"`
+	S3SecretKey string `json:"s3_secret_key,omitempty"`
+	S3Endpoint  string `json:"s3_endpoint,omitempty"`
 }
 
 // DefaultConfig returns a Config with default values. The base URL defaults
-// to the Massive API production endpoint.
+// to the Massive API production endpoint and the S3 endpoint defaults to
+// the Massive flat files endpoint.
 func DefaultConfig() *Config {
 	return &Config{
-		BaseURL: "https://api.massive.com",
+		BaseURL:    "https://api.massive.com",
+		S3Endpoint: "https://files.massive.com",
 	}
 }
 
