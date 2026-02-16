@@ -19,7 +19,7 @@ There are plenty of ways to interact with financial data APIs. You could write s
 ### Homebrew (macOS / Linux)
 
 ```bash
-brew tap cloudmanic/tap
+brew tap cloudmanic/massive https://github.com/cloudmanic/massive
 brew install massive
 ```
 
