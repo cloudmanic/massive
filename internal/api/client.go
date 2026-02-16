@@ -37,6 +37,12 @@ func NewClient(apiKey string) *Client {
 	}
 }
 
+// SetBaseURL overrides the API base URL. Used by tests to point
+// the client at a mock HTTP server.
+func (c *Client) SetBaseURL(url string) {
+	c.baseURL = url
+}
+
 // get performs an authenticated GET request to the given API path with
 // optional query parameters. It appends the API key to the request and
 // unmarshals the JSON response into the provided result interface.

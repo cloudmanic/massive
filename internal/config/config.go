@@ -17,6 +17,15 @@ const (
 	configFile = "config.json"
 )
 
+// configDirOverride allows tests to redirect config storage to a temp directory.
+var configDirOverride string
+
+// SetConfigDir overrides the config directory path for testing purposes.
+// Pass an empty string to restore the default behavior.
+func SetConfigDir(dir string) {
+	configDirOverride = dir
+}
+
 // Config holds the application configuration including API credentials
 // and the base URL for the Massive API.
 type Config struct {
@@ -32,19 +41,22 @@ func DefaultConfig() *Config {
 	}
 }
 
-// configPath returns the full filesystem path to the config file
-// located at ~/.config/massive/config.json.
+// configPath returns the full filesystem path to the config file.
+// Uses the override directory if set, otherwise ~/.config/massive/config.json.
 func configPath() (string, error) {
-	home, err := os.UserHomeDir()
+	dir, err := configDirPath()
 	if err != nil {
-		return "", fmt.Errorf("failed to get home directory: %w", err)
+		return "", err
 	}
-	return filepath.Join(home, configDir, configFile), nil
+	return filepath.Join(dir, configFile), nil
 }
 
-// configDirPath returns the full filesystem path to the config directory
-// located at ~/.config/massive/.
+// configDirPath returns the full filesystem path to the config directory.
+// Uses the override directory if set, otherwise ~/.config/massive/.
 func configDirPath() (string, error) {
+	if configDirOverride != "" {
+		return configDirOverride, nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("failed to get home directory: %w", err)
