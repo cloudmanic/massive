@@ -1,0 +1,95 @@
+#
+# Date: 2026-02-15
+# Copyright (c) 2026. All rights reserved.
+#
+# release.yml builds cross-platform binaries and creates a GitHub release
+# with auto-incrementing version tags on every push to main.
+#
+
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Run tests
+        run: go test ./...
+
+      - name: Determine next version
+        id: version
+        run: |
+          # Get the latest tag, default to v0.0.0 if none exist
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "Latest tag: $LATEST_TAG"
+
+          # Strip the 'v' prefix and split into parts
+          VERSION="${LATEST_TAG#v}"
+          MAJOR=$(echo "$VERSION" | cut -d. -f1)
+          MINOR=$(echo "$VERSION" | cut -d. -f2)
+          PATCH=$(echo "$VERSION" | cut -d. -f3)
+
+          # If no tags existed (v0.0.0), start at v0.1.0
+          if [ "$LATEST_TAG" = "v0.0.0" ]; then
+            NEXT_VERSION="v0.1.0"
+          else
+            # Auto-increment patch version
+            PATCH=$((PATCH + 1))
+            NEXT_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+          fi
+
+          echo "Next version: $NEXT_VERSION"
+          echo "version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build binaries
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          LDFLAGS="-X github.com/cloudmanic/massive-cli/cmd.version=${VERSION}"
+          mkdir -p dist
+
+          # darwin/amd64
+          GOOS=darwin GOARCH=amd64 go build -ldflags "$LDFLAGS" -o dist/massive-darwin-amd64 .
+
+          # darwin/arm64
+          GOOS=darwin GOARCH=arm64 go build -ldflags "$LDFLAGS" -o dist/massive-darwin-arm64 .
+
+          # linux/amd64
+          GOOS=linux GOARCH=amd64 go build -ldflags "$LDFLAGS" -o dist/massive-linux-amd64 .
+
+          # linux/arm64
+          GOOS=linux GOARCH=arm64 go build -ldflags "$LDFLAGS" -o dist/massive-linux-arm64 .
+
+          # windows/amd64
+          GOOS=windows GOARCH=amd64 go build -ldflags "$LDFLAGS" -o dist/massive-windows-amd64.exe .
+
+      - name: Create tag
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          git tag "$VERSION"
+          git push origin "$VERSION"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: ${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          files: dist/*

@@ -15,12 +15,18 @@ import (
 
 var outputFormat string
 
+// version is the current version of the CLI, injected at build time
+// via -ldflags "-X github.com/cloudmanic/massive-cli/cmd.version=vX.Y.Z".
+// Defaults to "dev" for local development builds.
+var version = "dev"
+
 // rootCmd is the base command for the Massive CLI. All subcommands
 // are registered as children of this command.
 var rootCmd = &cobra.Command{
-	Use:   "massive",
-	Short: "CLI for the Massive financial data API",
-	Long:  "A command-line interface for interacting with the Massive API to access stocks, crypto, forex, and other financial data.",
+	Use:     "massive",
+	Short:   "CLI for the Massive financial data API",
+	Long:    "A command-line interface for interacting with the Massive API to access stocks, crypto, forex, and other financial data.",
+	Version: version,
 }
 
 // Execute runs the root command and exits with a non-zero status code
